@@ -1,0 +1,321 @@
+//
+// Basic GPU setup and API's
+
+//
+// This code should be compiled with -fopenmp under gcc and
+// equivalent for other compilers.
+//
+
+// Important environment variables:
+//   export OMP_NUM_THREADS=<num>           # number of openmp threads to use
+//   export CUDA_VISIBLE_DEVICES=<devlist>  # comma separated device numbers
+//                                          # with 1 device it will be <devlist>=0
+//                                          # with 4 devices it could be 0,3
+//                                          # which leaves out 1, and 2
+#include "gpuutil.h"
+#include <atomic>
+
+void GpuErr(const char *fmt, ...) {
+	int tid = omp_get_thread_num();
+    va_list args;
+	printf("tid@%d - ", tid);
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+    printf("\n");
+    exit(1);
+}
+
+
+int GpuNumCpuThreads = 0;
+int *GpuThreadDevice = nullptr;
+int GpuNumDevices = 0;
+int GpuBlockSize = 0;
+int GpuBlockShift = 0;  // will have  GpuBlockSize == (1 << GpuBlockShift)
+cudaDeviceProp *GpuDeviceProp = nullptr;
+//
+// Streams keep each's threads actions on a GPU separate from
+// other threads actions.   Multiple threads will share one GPU.
+cudaStream_t *GpuThreadStream = nullptr;
+
+// Set current device - GPU
+void GpuSetDevice(int dev) {
+	GpuCheckErrors(cudaSetDevice(dev));
+}
+
+// Get current device - GPU
+int GpuGetDevice() {
+	int dev;
+	GpuCheckErrors(cudaGetDevice(&dev));
+	return dev;
+}
+void GpuGetDevice(int &dev) {
+	GpuCheckErrors(cudaGetDevice(&dev));
+}
+
+// Call before using the GPU
+void GpuInit(int argc, char **argv) {
+	GpuNumCpuThreads = omp_get_max_threads();
+	GpuThreadDevice = new int[GpuNumCpuThreads]; // figure out which gpu a thread uses.
+	GpuThreadStream = new cudaStream_t[GpuNumCpuThreads];
+
+	// See if user is picking GPU's for computation.
+	const char *s = getenv("CUDA_VISIBLE_DEVICES");
+
+	// Note, allmost all cuda API functions return an error code
+	// GpuCheckErrors make sure the call worked.   Try to do this
+	// even when you can't see how it would fail.
+	GpuCheckErrors(cudaGetDeviceCount(&GpuNumDevices));
+	if(GpuNumDevices <= 0) GpuErr("Can't find GPU");
+	GpuDeviceProp = new cudaDeviceProp[GpuNumDevices];
+	for(int dev = 0; dev < GpuNumDevices; dev++) {
+		GpuCheckErrors(cudaGetDeviceProperties(&GpuDeviceProp[dev], dev));
+		int bs = GpuDeviceProp[dev].maxThreadsPerBlock;
+		if(GpuBlockSize != 0 && bs != GpuBlockSize) GpuErr("Inconsistant block sizes on multiple GPUs");
+		GpuBlockSize = bs;
+	}
+	// GpuBlockSize should be power of 2
+	int bshift = 1;
+	while( (1 << bshift) < GpuBlockSize ) bshift++;
+	if ( (1 << bshift) != GpuBlockSize) GpuErr("Block size is not a power of 2???");
+	GpuBlockShift = bshift;
+
+	// do a very simple assignment of threads to devices.
+	int savedev;
+	GpuCheckErrors(cudaGetDevice(&savedev)); // save orig thread
+	for(int tid = 0; tid < GpuNumCpuThreads; tid++) { // loop over OMP threads
+		int dev = tid % GpuNumDevices;       // get device for OMP thread tid
+		GpuThreadDevice[tid] = dev;          // save in mapping table  tid->dev
+		GpuCheckErrors(cudaSetDevice(dev));  // set current device for stream creation
+		GpuCheckErrors(cudaStreamCreate(&GpuThreadStream[tid])); // create the stream (virtual GPU) for thread tid
+	}
+	GpuCheckErrors(cudaSetDevice(savedev));  // restore original thread
+}
+
+// "Pinned" memory is CPU memory suitable for transmitting to GPUs because
+// it is page locked AKA "pinned".   An async DMA transfer can count on it staying put.
+// Only use for buffers used for transers.
+void GpuMallocPinned(void **p, size_t sz) {
+	// cuda calls it "Host" memory and then describes it as pinned
+	GpuCheckErrors(cudaMallocHost(p, sz));
+}
+
+//
+// Managed memory will page back and forth between GPU/CPU
+// Not as fast, but can be simpler for some things.
+// Docs not too clear for multiple GPUs
+//
+void GpuMallocManaged(void **p, size_t sz) {
+	GpuCheckErrors(cudaMallocManaged(p, sz));
+}
+
+// Allocate memory on the device attached to current thread (GpuThreadDevice)
+void GpuMallocDevice(void **p, size_t sz) {
+	GpuCheckErrors(cudaMalloc(p, sz));
+}
+
+void GpuFreeDevice(void *p) {
+	GpuCheckErrors(cudaFree(p));
+}
+
+void GpuFreePinned(void *p) {
+	GpuCheckErrors(cudaFreeHost(p));
+}
+
+// Copy from host to device,  like memcpy first arg is destination.
+void GpuMemcpyHostToDevice(void *d_mem, const void *h_mem, size_t sz, cudaStream_t astream) {
+	cudaError_t code;
+	if(astream) {
+		code = cudaMemcpyAsync(d_mem, h_mem, sz, cudaMemcpyHostToDevice, astream);
+	} else {
+		// Memory does not need to be pinned/managed in this case
+		// Often used to initialize data structures from thread 0
+		code = cudaMemcpy(d_mem, h_mem, sz, cudaMemcpyHostToDevice);
+	}
+	GpuCheckErrors(code);
+}
+
+void GpuMemcpyDeviceToHost(void *h_mem, const void *d_mem, size_t sz, cudaStream_t astream) {
+	cudaError_t code;
+	if(astream) {
+		code = cudaMemcpyAsync(h_mem, d_mem, sz, cudaMemcpyDeviceToHost, astream);
+	} else {
+		// Memory does not need to be pinned/managed in this case
+		// Often used to initialize data structures from thread 0
+		code = cudaMemcpy(h_mem, d_mem, sz, cudaMemcpyDeviceToHost);
+	}
+	GpuCheckErrors(code);
+}
+
+// Call when in OMP thread to set up
+// #pragma omp parallel
+//    {
+//        GpuSetThreadDevice(); // done once per thread
+// #pragma omp for
+//        for(int i = 0; i < cnt; i++) {
+//            Do work.
+//        }
+//    }
+void GpuSetThreadDevice(int tid/* = -1*/) {
+	int xtid;
+	if(tid < 0) {
+		xtid = omp_get_thread_num();
+	} else {
+		xtid = tid;
+	}
+	GpuCheckErrors(cudaSetDevice(GpuThreadDevice[xtid]));
+}
+
+// Cloning support
+
+#define CLONEHASHSIZE (1u << 14u)
+static GpuCloneRecord_t *clonehashtab[CLONEHASHSIZE] = {0};
+static std::atomic_flag clonereglock = ATOMIC_FLAG_INIT; // init to not set
+static int clonecount = 0;
+
+// hash a pointer into clonehashtab index
+static inline unsigned clonehash(const void *p) {
+    size_t pi = (size_t)p;
+    return ((pi >> 4u) + (pi >> 18u)) & (CLONEHASHSIZE-1);
+}
+
+// associated with one cpu pointer
+GpuCloneRecord_t::GpuCloneRecord_t() {
+	gnext = nullptr;
+	cpup = nullptr;
+	info = new GpuCloneInfo_t[GpuNumCpuThreads]; // one record per possible thread
+	for(int i = 0; i < GpuNumCpuThreads; i++) {
+		info[i].gpup = nullptr;
+		info[i].data = 0;
+	}
+}
+
+GpuCloneRecord_t::~GpuCloneRecord_t() {
+	delete[] info;
+}
+
+// Get clone, record, return nullptr if not found
+static GpuCloneRecord_t *getclonerecord(const void *cpup) {
+	unsigned h = clonehash(cpup);
+	GpuCloneRecord_t *crp;
+	for(crp = clonehashtab[h]; crp; crp=crp->gnext) {
+		if(crp->cpup == cpup) return crp;
+	}
+	return nullptr;
+}
+
+// Get or if needed make a clone record for cpu buffer pointer cpup
+static GpuCloneRecord_t *getclonerecord(const void *cpup, size_t size) {
+	unsigned h = clonehash(cpup);
+	GpuCloneRecord_t *crp;
+	for(crp = clonehashtab[h]; crp; crp=crp->gnext) {
+		if(crp->cpup == cpup) {
+			if(crp->size != size) 
+				GpuErr("Clone size mismatch");
+			return crp;
+		}
+	}
+	// have to make one
+    crp = new GpuCloneRecord_t;
+    crp->cpup = cpup;
+	crp->size = size;
+    // lock before inserting
+    while(clonereglock.test_and_set(std::memory_order_acquire))
+        ; // spin
+    crp->gnext = clonehashtab[h];
+    clonehashtab[h] = crp;
+    clonecount++;
+    // unlock
+    clonereglock.clear(std::memory_order_release);
+    return crp;
+}
+
+//
+// Each CPU buffer may have either one clone per thread
+// or one per device (shared by threads sharing that device)
+// Constant tables shared in calculations fit the per device option.
+// Buffers to send calculation inputs or retrieve calculation results
+// will usually be on a thread basis.
+// supply optional arg omp thread id tid if you already have it
+void *GpuFindCloneThread(void *cpup, int tid) {
+	GpuCloneRecord_t *crp = getclonerecord(cpup);
+	if(!cpup) GpuErr("Missing clone");
+	if(tid < 0) tid = omp_get_thread_num();
+	return crp->info[tid].gpup;
+}
+
+//
+// Each thread gets a clone.
+// Do not update by default.  We will usually perform copies
+// immediately before or after kernel launches.
+//
+void GpuCloneForThreads(void *cpup, size_t size, bool update) {
+	int savedev = GpuGetDevice();
+	GpuCloneRecord_t *crp = getclonerecord(cpup, size);
+	for(int tid = 0; tid < GpuNumCpuThreads; tid++) {
+		GpuSetThreadDevice(tid);
+		void *gpup;
+		GpuMallocDevice(&gpup, size);
+		crp->info[tid].gpup = gpup;
+		crp->info[tid].data = 0;
+		if(update) GpuMemcpyHostToDevice(gpup, cpup, size);
+	}
+	GpuSetDevice(savedev);
+}
+
+//
+// Make a clone per device.   By default, update clone from cpu
+// immediately.   This is the usual thing to do for 
+// shared (between threads) tables.   You update once at creation.
+//
+void GpuCloneForDevices(void *cpup, size_t size, bool update) {
+	int savedev = GpuGetDevice();
+	GpuCloneRecord_t *crp = getclonerecord(cpup, size);
+	void **dclones = new void *[GpuNumDevices];
+	for(int dev = 0; dev < GpuNumDevices; dev++) {
+		GpuSetDevice(dev);
+		GpuMallocDevice(&dclones[dev], size);
+		if(update) GpuMemcpyHostToDevice(dclones[dev], cpup, size);
+	}
+	for(int tid = 0; tid < GpuNumCpuThreads; tid++) {
+		crp->info[tid].gpup = dclones[GpuThreadDevice[tid]];
+		crp->info[tid].data = 0;
+	}
+	delete[] dclones;
+	GpuSetDevice(savedev);
+}
+
+//
+// Remove all clones associated with cpup
+//
+void GpuFreeClones(void *cpup) {
+	GpuCloneRecord_t *crp = getclonerecord(cpup);
+	GpuCloneInfo_t *info = crp->info;
+	if(!crp) return; // nothing to do
+
+	for(int tid = 0; tid < GpuNumCpuThreads; tid++) {
+		void *gpup = info[tid].gpup;
+		if(!gpup) continue;
+		GpuFreeDevice(gpup);
+		info[tid].gpup = nullptr;
+		// Now make sure we get the other thread slots that have the same clone
+		int dev = GpuThreadDevice[tid];
+		for(int xtid = tid + 1; xtid < GpuNumCpuThreads; xtid++) {
+			if(GpuThreadDevice[xtid] == dev && gpup == info[xtid].gpup) {
+				info[xtid].gpup = nullptr; // prevent double free
+			}
+		}
+	}
+}
+
+#if 0
+void GpuOmpDelegate(size_t cnt, int &startb, int &bcnt, size_t &tstart, size_t &tcnt) {
+	int tid = omp_get_thread_num;
+	totalblocks = GpuThreads2BlockCount(cnt);
+	// Figure out which blocks this this OMP thread services
+	tblocks = totalblocks / GpuNumCpuThreads;
+	leftover = tblocks - tblocks * GpuNumCpuThreads;
+	startb = std::min(tid, leftover) + tblocks * tid;
+}
+
+#endif
