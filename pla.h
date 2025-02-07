@@ -57,7 +57,7 @@ struct oneDArray{
     vector<string> convertBackFormat(); //prints the pla table converted back to be in espresso format
     vector<string> convertToVecString(); //converts the pla table to a vector of strings
 
-    index_t findBiggestWeight(int minCost) const;
+    index_t findBiggestWeight(int minimumGain) const;
 
     //GPU Functions
     void makeClones();

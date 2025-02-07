@@ -202,44 +202,39 @@ template vector<string> oneDArray<uint8_t>::convertToVecString();
 template vector<string> oneDArray<uint32_t>::convertToVecString();
 
 template<> //todo: maybe change this to <> instead of <uint32_t>
-index_t oneDArray<uint32_t>::findBiggestWeight(int minCost) const{
+index_t oneDArray<uint32_t>::findBiggestWeight(int minimumGain) const{
     //finds the biggest weight in the table
 
-    vector<index_t> skipIndex;
     index_t indMax,i;
     int temp,max;
-    do {
-        max = 0;
-        indMax = 0;
-        temp = 0;
-        i = 0;
-        cout<<"Finding the biggest weight..."<<endl;
-        for (; i < alsize; i++) {
-            if (find(skipIndex.begin(), skipIndex.end(), i) != skipIndex.end()) //if (it==skipIndex.end()-1) break;
-                continue;
-            temp = arr[i];
-            //if (temp >rows) //rows used to be passed in as itable.rows
-            //    continue;
-            if(temp>max) {
-                max = temp;
-                indMax = i;
-            }
+    max = 0;
+    indMax = 0;
+    temp = 0;
+    i = 0;
+    cout<<"Finding the biggest weight..."<<endl;
+    for (; i < alsize; i++) {
+        temp = arr[i];
+        if (temp >rows) //rows used to be passed in as itable.rows
+            continue;
+        if(temp>max) {
+            max = temp;
+            indMax = i;
         }
-        if (max == 0)
-            break;
-        if (max < 3 && skipIndex.size() >= alsize/3)
-            return alsize;
-        skipIndex.push_back(indMax);
-    }while ((max*-1 + 2) > minCost);
+    }
+    if((max < 2-minimumGain))
+        return alsize;
     return indMax;
 }
 template index_t oneDArray<uint32_t>::findBiggestWeight(int minCost) const;
 
-#if 0
+//#if 0
 template<typename numT>
 void oneDArray<numT>::makeClones() {
+    GPUDECLPATCHES(1);
+    ADDPATCH(this, arr);
+    ENDPATCH();
     GpuCloneForDevices(arr,alsize*sizeof(numT),true);
     GpuCloneForDevices(this,sizeof(oneDArray<numT>),true);
     void* garr = GpuFindCloneThread(arr);
 }
-#endif
+//#endif

@@ -194,24 +194,41 @@ GpuCloneRecord_t::~GpuCloneRecord_t() {
 	delete[] info;
 }
 
-// Get clone, record, return nullptr if not found
 static GpuCloneRecord_t *getclonerecord(const void *cpup) {
 	unsigned h = clonehash(cpup);
 	GpuCloneRecord_t *crp;
 	for(crp = clonehashtab[h]; crp; crp=crp->gnext) {
-		if(crp->cpup == cpup) return crp;
+		if(crp->cpup == cpup) {
+			return crp;
+		}
+	}
+	return nullptr;
+}
+
+// Get clone, record, return nullptr if not found
+static GpuCloneRecord_t *getclonerecord(const void *cpup, bool clonethread) {
+	unsigned h = clonehash(cpup);
+	GpuCloneRecord_t *crp;
+	for(crp = clonehashtab[h]; crp; crp=crp->gnext) {
+		if(crp->cpup == cpup) {
+			if(crp->clonethread != clonethread)
+				GpuErr("getclonerecord: dev/thread mismatch");
+			return crp;
+		}
 	}
 	return nullptr;
 }
 
 // Get or if needed make a clone record for cpu buffer pointer cpup
-static GpuCloneRecord_t *getclonerecord(const void *cpup, size_t size) {
+static GpuCloneRecord_t *getclonerecord(const void *cpup, size_t size, bool clonethread) {
 	unsigned h = clonehash(cpup);
 	GpuCloneRecord_t *crp;
 	for(crp = clonehashtab[h]; crp; crp=crp->gnext) {
 		if(crp->cpup == cpup) {
 			if(crp->size != size) 
 				GpuErr("Clone size mismatch");
+			if(crp->clonethread != clonethread)
+				GpuErr("getclonerecord: dev/thread mismatch");
 			return crp;
 		}
 	}
@@ -219,6 +236,7 @@ static GpuCloneRecord_t *getclonerecord(const void *cpup, size_t size) {
     crp = new GpuCloneRecord_t;
     crp->cpup = cpup;
 	crp->size = size;
+	crp->clonethread = clonethread;
     // lock before inserting
     while(clonereglock.test_and_set(std::memory_order_acquire))
         ; // spin
@@ -238,29 +256,77 @@ static GpuCloneRecord_t *getclonerecord(const void *cpup, size_t size) {
 // will usually be on a thread basis.
 // supply optional arg omp thread id tid if you already have it
 void *GpuFindCloneThread(void *cpup, int tid) {
-	GpuCloneRecord_t *crp = getclonerecord(cpup);
-	if(!cpup) GpuErr("Missing clone");
+	GpuCloneRecord_t *crp = getclonerecord(cpup, true);
+	if(!crp) GpuErr("Missing clone");
 	if(tid < 0) tid = omp_get_thread_num();
 	return crp->info[tid].gpup;
 }
+
+//
+// Some data is cloned once per device like constant tables
+// used across all threads.
+//
+void *GpuFindCloneDevice(void *cpup, int dev) {
+	// false is for not thread based.
+	GpuCloneRecord_t *crp = getclonerecord(cpup, false);
+	if(crp->clonethread) GpuErr("GpuFindCloneDevice with thread clone");
+	GpuCloneInfo_t *info = crp->info;
+	for(int tid = 0; tid <= GpuNumCpuThreads; tid++) {
+		int tdev = GpuThreadDevice[tid];
+		if(tdev == dev) {
+			return info[tdev].gpup;
+		}
+	}
+	return nullptr;
+}
+
+static int GpuClonePatchEndInt = 0;
+// pointer value used to mark end of patches
+void *GpuClonePatchEnd = (void *)&GpuClonePatchEndInt;
 
 //
 // Each thread gets a clone.
 // Do not update by default.  We will usually perform copies
 // immediately before or after kernel launches.
 //
-void GpuCloneForThreads(void *cpup, size_t size, bool update) {
+// update false with patches doens't make sense.
+//
+//if update is false, still allocate but don't copy data
+//clone subfields before cloning overarching main struct/class and then patch the subfields in
+void GpuCloneForThreads(void *cpup, size_t size, bool update, GpuClonePatch_t *patches) {
 	int savedev = GpuGetDevice();
-	GpuCloneRecord_t *crp = getclonerecord(cpup, size);
+	GpuCloneRecord_t *crp = getclonerecord(cpup, size, true);
+	char *pbuf = nullptr;
+	if (update && patches) {
+		pbuf = new char[size];
+		memcpy(pbuf, cpup, size);
+	}
 	for(int tid = 0; tid < GpuNumCpuThreads; tid++) {
 		GpuSetThreadDevice(tid);
 		void *gpup;
 		GpuMallocDevice(&gpup, size);
 		crp->info[tid].gpup = gpup;
 		crp->info[tid].data = 0;
-		if(update) GpuMemcpyHostToDevice(gpup, cpup, size);
+		if(update) {
+			if(patches) {
+				// fill buffer pbuf with *cpup + patches
+				void *fp;
+				for(GpuClonePatch_t *p = &patches[0]; p->offset>=0; p++) {
+					memcpy((void*)&fp, (char*)cpup + p->offset, sizeof(void *));
+					void *dpp = GpuFindCloneThread(fp, tid);
+					if (!dpp)
+						GpuErr("Missing field clone when patching");
+					memcpy(pbuf + p->offset, (void *)&dpp, sizeof(void *));
+				}
+				GpuMemcpyHostToDevice(gpup, pbuf, size);
+			} else {
+				// no patches, send original data
+				GpuMemcpyHostToDevice(gpup, cpup, size);
+			}
+		}
 	}
 	GpuSetDevice(savedev);
+	if(pbuf) delete[] pbuf;
 }
 
 //
@@ -268,14 +334,36 @@ void GpuCloneForThreads(void *cpup, size_t size, bool update) {
 // immediately.   This is the usual thing to do for 
 // shared (between threads) tables.   You update once at creation.
 //
-void GpuCloneForDevices(void *cpup, size_t size, bool update) {
+// update false with patches doesn't make sense.
+//
+void GpuCloneForDevices(void *cpup, size_t size, bool update, GpuClonePatch_t *patches) {
 	int savedev = GpuGetDevice();
-	GpuCloneRecord_t *crp = getclonerecord(cpup, size);
+	GpuCloneRecord_t *crp = getclonerecord(cpup, size, false);
+	char *pbuf = nullptr;
+	if (update && patches) {
+		pbuf = new char[size];
+		memcpy(pbuf, cpup, size);
+	}
 	void **dclones = new void *[GpuNumDevices];
 	for(int dev = 0; dev < GpuNumDevices; dev++) {
 		GpuSetDevice(dev);
 		GpuMallocDevice(&dclones[dev], size);
-		if(update) GpuMemcpyHostToDevice(dclones[dev], cpup, size);
+		if(update) {
+			if(patches) {
+				memcpy(pbuf, cpup, size);
+				void *fp;
+				for(GpuClonePatch_t *p = &patches[0]; p->offset>=0; p++) {
+					memcpy((void*)&fp, (char*)cpup + p->offset, sizeof(void *));
+					void *dpp = GpuFindCloneDevice(fp, dev);
+					if (!dpp)
+						GpuErr("Missing field clone when patching");
+					memcpy(pbuf + p->offset, (void *)&dpp, sizeof(void *));
+				}
+				GpuMemcpyHostToDevice(dclones[dev], pbuf, size);
+			} else {
+				GpuMemcpyHostToDevice(dclones[dev], cpup, size);
+			}
+		}
 	}
 	for(int tid = 0; tid < GpuNumCpuThreads; tid++) {
 		crp->info[tid].gpup = dclones[GpuThreadDevice[tid]];
@@ -283,6 +371,7 @@ void GpuCloneForDevices(void *cpup, size_t size, bool update) {
 	}
 	delete[] dclones;
 	GpuSetDevice(savedev);
+	if(pbuf) delete[] pbuf;
 }
 
 //

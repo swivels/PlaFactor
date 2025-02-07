@@ -20,6 +20,7 @@
 #endif
 
 #include <cmath>
+#include <cstddef> // for offsetof
 #include <cstdlib>
 #include <cstdio>
 #include <cstdarg>
@@ -136,21 +137,49 @@ struct GpuCloneRecord_t {
 	GpuCloneRecord_t *gnext; // next in hash bin list
 	const void *cpup;        // cpu buffer being cloned
 	size_t size;             // size of cpu buffer
+	bool   clonethread;      // true -> clone/thread, false -> clone/device
 	GpuCloneInfo_t *info;    // [tid], one entry per thread
 
 	GpuCloneRecord_t();
 	~GpuCloneRecord_t();
 };
 
+// A table of these are used for patching pointers inside
+// struct being cloned.   Clone things pointed to first, then
+// clone top structure.
+struct GpuClonePatch_t {
+	//void *cpup;  not needed      // pointer to cpu buffer that was cloned, nullptr to zap pointer in clone
+	int offset;    // use offsetof(type, field)
+};
+#define GPUDECLPATCHES(maxpatches) \
+	unsigned _patchcnt = 0; \
+	GpuClonePatch_t _patches[maxpatches+2];
+
+#define ADDPATCH(cpup_, field_) {  \
+	unsigned pos = _patchcnt++; \
+	GpuClonePatch_t *p = &_patches[pos]; \
+	p->offset = offsetof(decltype(*cpup_), field_); \
+}
+
+#define ENDPATCH() { \
+	unsigned pos = _patchcnt++; \
+	GpuClonePatch_t *p = &_patches[pos]; \
+	p->offset = -1; \
+}
+
+//	p->offset = ((char *)&cpup_->field_) - (char *)cpup_); \
+
 // Clone once per device for read only data shared across threads
 // TODO:  might want to put in "constant" memory
-void GpuCloneForDevices(void *cpup, size_t size, bool update=true);
+void GpuCloneForDevices(void *cpup, size_t size, bool update=true, GpuClonePatch_t *patches = nullptr);
 // If using streams, cpup should be allocated with
 //   GpuMallocPinned so physical address doesn't change during
 //   async transfer.
-void GpuCloneForThreads(void *cpup, size_t size, bool update=false);
+void GpuCloneForThreads(void *cpup, size_t size, bool update=false, GpuClonePatch_t *patches = nullptr);
 // Find clone this thread should use.
 void *GpuFindCloneThread(void *cpup, int tid = -1);
+void *GpuFindCloneDev(void *cpup, int dev);
+
 // free all associated clones
 void GpuFreeClones(void *cpup); 
 

@@ -8,6 +8,7 @@
 #include <cassert>
 using namespace std;
 
+//hello github
 
 #define ParsingFunctions //code section for parsing functions
 #ifdef ParsingFunctions
@@ -458,7 +459,7 @@ bool pla::minimize() {
     cout<<"Current PLA Cost "<<beforeCost<<endl;
     vector<uint32_t> skipIndex;
 
-    index_t bindex = countArray.findBiggestWeight(-1);   //todo: getting weirdly large value, added temp fix
+    index_t bindex = countArray.findBiggestWeight(-1);
     if (bindex == countArray.alsize) {
         cout<<"Never found a cost efficient product term to substitute, aborting minimization."<<endl;
         return false;
