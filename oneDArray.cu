@@ -3,7 +3,6 @@
 //
 #include <cassert>
 
-#include "gpuutil.h"
 #include "pla.h"
 //~(numT)0 is max int
 
@@ -42,74 +41,81 @@ template void oneDArray<uint8_t>::initArr();
 template void oneDArray<uint32_t>::initArr();
 
 template <typename numT>
-numT* oneDArray<numT>::ind_ptr(index_t row, index_t col) {
+NVCC_BOTH numT* oneDArray<numT>::ind_ptr(index_t row, index_t col) {
     return arr+ind(row,col);
 }
-template uint8_t* oneDArray<uint8_t>::ind_ptr(index_t row, index_t col);
-template uint32_t* oneDArray<uint32_t>::ind_ptr(index_t row, index_t col);
+template NVCC_BOTH uint8_t* oneDArray<uint8_t>::ind_ptr(index_t row, index_t col);
+template NVCC_BOTH uint32_t* oneDArray<uint32_t>::ind_ptr(index_t row, index_t col);
 
 // indexing function which returns 1d index
 template <typename numT>
-index_t oneDArray<numT>::ind(index_t row, index_t col) const { //todo: make inline and move to .h file for speed, do profiling
+NVCC_BOTH index_t oneDArray<numT>::ind(index_t row, index_t col) const { //todo: make inline and move to .h file for speed, do profiling
     if (row >= alrows || col >= alcols) { //todo: maybe remove this check for speed
-        cerr << "arr index is out of allocated bounds-ind" << endl;
-        exit(1);
+        //cerr << "arr index is out of allocated bounds-ind" << endl;
+        //exit(1);
+        OnGpuErr("arr index is out of allocated bounds--ind function");
     }
     return alcols * row + col;
 }
-template index_t oneDArray<uint8_t>::ind(index_t row, index_t col) const;
-template index_t oneDArray<uint32_t>::ind(index_t row, index_t col) const;
+template NVCC_BOTH index_t oneDArray<uint8_t>::ind(index_t row, index_t col) const;
+template NVCC_BOTH index_t oneDArray<uint32_t>::ind(index_t row, index_t col) const;
 
 template <>
-index_t oneDArray<uint32_t>::indOrdered(index_t row, index_t col) const { //for count array only
+NVCC_BOTH index_t oneDArray<uint32_t>::indOrdered(index_t row, index_t col) const { //for count array only
     if (row >= alrows || col >= alcols) {
-        cerr << "arr index is out of allocated bounds-ind" << endl;
-        exit(1);
+        //cerr << "arr index is out of allocated bounds--indOrdered function" << endl;
+        //exit(1);
+        OnGpuErr("arr index is out of allocated bounds--indOrdered function");
     }
     if (row>col)
         return alcols * col + row;
     else
         return alcols * row + col;
 }
-template index_t oneDArray<uint32_t>::indOrdered(index_t row, index_t col) const;
+template NVCC_BOTH index_t oneDArray<uint32_t>::indOrdered(index_t row, index_t col) const;
 
 template <typename numT>
-pair<index_t,index_t> oneDArray<numT>::indTwoD(index_t index) const {
+NVCC_BOTH index_pair oneDArray<numT>::indTwoD(index_t index) const {
     if (index>=alsize) { //todo: maybe remove this check for speed
-        cerr << "arr index is out of allocated bounds-indTwoD" << endl;
-        exit(1);
+        //cerr << "arr index is out of allocated bounds--indTwoD function" << endl;
+        //exit(1);
+        OnGpuErr("arr index is out of allocated bounds--indTwoD function");
     }
-    int row = index/alcols;
-    int col = index%alcols;
-    if(row>=rows||col>=cols)
-        cout<<"index is out of used bounds-indTwoD"<<endl;
-    return make_pair(row,col);
+    uint32_t row = index/alcols; //int row = index/alcols;
+    uint32_t col = index%alcols; //int col = index%alcols;
+    if(row>=rows||col>=cols) {
+        //cout<<"index is out of used bounds--indTwoD function"<<endl;
+        OnGpuErr("index is out of used bounds--indTwoD function");
+    }
+    return {row,col};//index_pair(row,col);//make_pair(row,col);
 }
-template pair<index_t,index_t> oneDArray<uint8_t>::indTwoD(index_t index) const;
-template pair<index_t,index_t> oneDArray<uint32_t>::indTwoD(index_t index) const;
+template NVCC_BOTH index_pair oneDArray<uint8_t>::indTwoD(index_t index) const;
+template NVCC_BOTH index_pair oneDArray<uint32_t>::indTwoD(index_t index) const;
 
 // indexing function which returns value
 template <typename numT>
-numT oneDArray<numT>::get_val(index_t row, index_t col) const { //todo: make inline and move to .h file for speed, do profiling
+NVCC_BOTH numT oneDArray<numT>::get_val(index_t row, index_t col) const { //todo: make inline and move to .h file for speed, do profiling
     if (row >= alrows || col >= alcols) { //todo: maybe remove this check for speed
-        cerr << "arr index is out of allocated bounds-get_val" << endl;
-        exit(1);
+        //cerr << "arr index is out of allocated bounds--get_val function" << endl;
+        //exit(1);
+        OnGpuErr("arr index is out of allocated bounds--get_val function");
     }
     return arr[alcols * row + col];
 }
-template uint8_t oneDArray<uint8_t>::get_val(index_t row, index_t col) const;
-template uint32_t oneDArray<uint32_t>::get_val(index_t row, index_t col) const;
+template NVCC_BOTH uint8_t oneDArray<uint8_t>::get_val(index_t row, index_t col) const;
+template NVCC_BOTH uint32_t oneDArray<uint32_t>::get_val(index_t row, index_t col) const;
 
 template <typename numT>
-void oneDArray<numT>::set_val(index_t row, index_t col, numT val) const {
+NVCC_BOTH void oneDArray<numT>::set_val(index_t row, index_t col, numT val) const {
     if (row >= alrows || col >= alcols) { //todo: maybe remove this check for speed
-        cerr << "arr index is out of allocated bounds, cannot set value at this index-set_val" << endl;
-        exit(1);
+        //cerr << "arr index is out of allocated bounds, cannot set value at this index--set_val function" << endl;
+        //exit(1);
+        OnGpuErr("arr index is out of allocated bounds, cannot set value at this index--set_val function");
     }
     arr[alcols * row + col] = val;
 }
-template void oneDArray<uint8_t>::set_val(index_t row, index_t col, uint8_t val) const;
-template void oneDArray<uint32_t>::set_val(index_t row, index_t col, uint32_t val) const;
+template NVCC_BOTH void oneDArray<uint8_t>::set_val(index_t row, index_t col, uint8_t val) const;
+template NVCC_BOTH void oneDArray<uint32_t>::set_val(index_t row, index_t col, uint32_t val) const;
 
 template <>
 void oneDArray<uint8_t>::printRow(index_t row) const {
@@ -226,15 +232,3 @@ index_t oneDArray<uint32_t>::findBiggestWeight(int minimumGain) const{
     return indMax;
 }
 template index_t oneDArray<uint32_t>::findBiggestWeight(int minCost) const;
-
-//#if 0
-template<typename numT>
-void oneDArray<numT>::makeClones() {
-    GPUDECLPATCHES(1);
-    ADDPATCH(this, arr);
-    ENDPATCH();
-    GpuCloneForDevices(arr,alsize*sizeof(numT),true);
-    GpuCloneForDevices(this,sizeof(oneDArray<numT>),true);
-    void* garr = GpuFindCloneThread(arr);
-}
-//#endif

@@ -38,6 +38,7 @@
 
 // Fatal error message printer - will exit.
 void GpuErr(const char *fmt, ...);
+NVCC_BOTH void OnGpuErr(const char *fmt);
 
 // GpuInit will set these up
 extern int GpuNumCpuThreads; // number of OMP threads
@@ -148,21 +149,22 @@ struct GpuCloneRecord_t {
 // struct being cloned.   Clone things pointed to first, then
 // clone top structure.
 struct GpuClonePatch_t {
-	//void *cpup;  not needed      // pointer to cpu buffer that was cloned, nullptr to zap pointer in clone
 	int offset;    // use offsetof(type, field)
 };
 #define GPUDECLPATCHES(maxpatches) \
 	unsigned _patchcnt = 0; \
-	GpuClonePatch_t _patches[maxpatches+2];
+	GpuClonePatch_t _patches[maxpatches+1];
 
-#define ADDPATCH(cpup_, field_) {  \
+#define ADDPATCH(this_, field_) {  \
 	unsigned pos = _patchcnt++; \
+	if (_patchcnt >= sizeof(_patches)/sizeof(_patches[0])) GpuErr("Too many patches in AddPatch"); \
 	GpuClonePatch_t *p = &_patches[pos]; \
-	p->offset = offsetof(decltype(*cpup_), field_); \
-}
+	p->offset = (char*)(&this_->field_)-(char*)this_; \
+}//char* = one byte type
 
 #define ENDPATCH() { \
 	unsigned pos = _patchcnt++; \
+	if (_patchcnt > sizeof(_patches)/sizeof(_patches[0])) GpuErr("Too many patches in EndPatch"); \
 	GpuClonePatch_t *p = &_patches[pos]; \
 	p->offset = -1; \
 }
@@ -178,7 +180,7 @@ void GpuCloneForDevices(void *cpup, size_t size, bool update=true, GpuClonePatch
 void GpuCloneForThreads(void *cpup, size_t size, bool update=false, GpuClonePatch_t *patches = nullptr);
 // Find clone this thread should use.
 void *GpuFindCloneThread(void *cpup, int tid = -1);
-void *GpuFindCloneDev(void *cpup, int dev);
+void *GpuFindCloneDevice(void *cpup, int dev);
 
 // free all associated clones
 void GpuFreeClones(void *cpup); 

@@ -2,10 +2,8 @@
 // Created by Brian McElvain on 10/23/24.
 //
 
-#include "pla.h"
-#include "gpuutil.h"
-
 #include <cassert>
+#include "pla.h"
 using namespace std;
 
 //hello github
@@ -215,15 +213,17 @@ void pla::fillCountArray() {
     :return:
     print("Example small count array:")
     print("0(~a), 1(a), 2(b~), 3(b)")
-    print("For example self.arrayCount[1,2]= 1 would fill the index of the 2d array where a and b~ are the literals of the product term")
+    print("For example self.countArray[1,2]= 1 would fill the index of the 2d array where a and b~ are the literals of the product term")
     print("This means the product term reprentated by the row and column has 1 positive and 1 negative literal and occurs(weight) 1 time\n")
     print("Filling the count array:")
      */
 
+    //cout<<"index result: ";
 #pragma omp parallel for
     for(index_t col1 = 0; col1 < itable.cols; col1++) {
         for(index_t col2 = col1+1; col2 < itable.cols; col2++) {
             index_t resultIndex = countArray.ind(col1,col2);
+            //cout<<resultIndex<<" with value: "; //todo: has some index's that are too large/out of bounds, fix
             int cnt = 0;
             for(index_t row = 0; row < itable.alrows; row++) {
                 if(usedrows[row] == 0)
@@ -233,8 +233,10 @@ void pla::fillCountArray() {
                 cnt++;
             }
             countArray.arr[resultIndex] = cnt;
+            //cout<<countArray.arr[resultIndex]<<", "<<endl;
         }
     }
+    //cout<<endl;
 
 }
 
@@ -465,7 +467,7 @@ bool pla::minimize() {
         return false;
     }
     index_t bweight = countArray.arr[bindex];
-    pair<index_t,index_t> bindex2d = countArray.indTwoD(bindex);
+    index_pair bindex2d = countArray.indTwoD(bindex);
     index_t ind1 = bindex2d.first;
     index_t ind2 = bindex2d.second;
     cout<<"Biggest weight: "<<bweight<<endl;
@@ -597,7 +599,7 @@ bool pla::minimize() {
     }
 }
 
-index_t pla::addLiteral(pair<index_t,index_t> bindex2d) {
+index_t pla::addLiteral(index_pair bindex2d) {
     index_t ind1 = bindex2d.first;
     index_t ind2 = bindex2d.second;
     //cout<<"Biggest weight index: "<<ind1<<", "<<ind2<<endl;
@@ -701,10 +703,79 @@ int pla::otableSum() {
 #define GPUFunctions //code section for functions for GPU
 #ifdef GPUFunctions
 
+#define SAMPLESPERTHREAD 1024
+
+void pla::createPairArray() {
+    pairCount = itable.cols*(itable.cols-1)/2;
+    pairArray = new index_pair[pairCount];
+    assert(pairCount == ((countArray.size-countArray.rows)/2)); //not quite right
+    index_t pos = 0;
+    for(index_t col1 = 0; col1 < itable.cols; col1++) {
+        for(index_t col2 = col1+1; col2 < itable.cols; col2++) {
+            pairArray[pos++] = index_pair(col1,col2);
+        }
+    }
+}
+
+void pla::makeClonesGpu() {
+    cout<<"Cloning Pla and subtables to GPU"<<endl;
+    GPUDECLPATCHES(5);
+    ADDPATCH(this, itable.arr);
+    ADDPATCH(this, otable.arr);
+    ADDPATCH(this, countArray.arr);
+    ADDPATCH(this, usedrows);
+    ADDPATCH(this, pairArray);
+    ENDPATCH();
+    GpuCloneForDevices(itable.arr,itable.alsize*sizeof(uint8_t),false);
+    GpuCloneForDevices(otable.arr,otable.alsize*sizeof(uint8_t),false);
+    GpuCloneForDevices(countArray.arr,countArray.alsize*sizeof(uint32_t),false);
+    GpuCloneForDevices(usedrows,itable.alsize*sizeof(uint8_t),false);
+    GpuCloneForDevices(pairArray,pairCount*sizeof(uint32_t),false);
+
+    GpuCloneForDevices(this,sizeof(*this),true,_patches);
+}
+
+void pla::launchPairArray(){
+    int threads = pairCount;
+    int dev = GpuGetDevice();//get device for current thread on CPU--will be thread 0. gets dev which is gpu for thread 0
+    pla *plaGpup = (pla*)GpuFindCloneDevice((void*)this,dev);
+    int bcnt = GpuThreads2BlockCount(threads);
+    fill_CountArray_Kernel<<<bcnt,GpuBlockSize>>>(plaGpup); //GpuBlockSize is global and set by GPU init
+
+    cudaError_t err = cudaGetLastError();
+    if(cudaSuccess != err) {
+        GpuErr("kernel execution failed(%d): %s\n", static_cast<int>(err), cudaGetErrorString(err));
+    }
+}
+__global__ void fill_CountArray_Kernel(pla* plaGpup){ //__global__ means it lives on the gpu and can be called from the cpu
+    int idx = threadIdx.x+blockDim.x*blockIdx.x; //way to find global thread index within a device
+	// idx is the "sequence" number
+    if (idx >= plaGpup->pairCount)
+        return;
+    index_t col1 = plaGpup->pairArray[idx].first;
+    index_t col2 = plaGpup->pairArray[idx].second;
+
+	index_t resultIndex = plaGpup->countArray.ind(col1,col2);
+    int cnt = 0;
+    for(index_t row = 0; row < plaGpup->itable.alrows; row++) {
+        if(plaGpup->usedrows[row] == 0)
+            continue;
+        if(plaGpup->itable.get_val(row,col1) == 0 || plaGpup->itable.get_val(row,col2) == 0)
+            continue;
+        cnt++;
+    }
+    plaGpup->countArray.arr[resultIndex] = cnt;
+}
+
+
+/*
+*#define NVCC_BOTH __host__ __device__
+// This means only on the GPU
+#define NVCC_DEVICE __device__ //__global__ means it lives on the gpu and can be called from the cpu
+#endif
+ *
+ *
+ */
+
 
 #endif GPUFunctions
-
-void pla::makeClones() {
-
-
-}

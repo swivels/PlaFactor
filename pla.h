@@ -7,20 +7,30 @@
 #include <sstream>
 #include <cmath>
 #include <vector>
-#include "miscfunctions.h"
 #include <algorithm> //for std::fill and all_of
+#include "gpuutil.h"
+#include "miscfunctions.h"
 
 using namespace std;
 
-#define SECTION_START(name) // Start of section: name
-#define SECTION_END(name)   // End of section: name
+//#define SECTION_START(name) // Start of section: name
+//#define SECTION_END(name)   // End of section: name
 
 #ifndef PLACUDA_PLA_H
 #define PLACUDA_PLA_H
 
-class pla;
-
 typedef uint32_t index_t;
+
+struct index_pair{
+    uint32_t first;
+    uint32_t second;
+    // Default constructor (for arrays)
+    NVCC_BOTH index_pair() : first(0), second(0) {}
+    // Parameterized constructor
+    NVCC_BOTH index_pair(index_t f, index_t s) : first(f), second(s) {}
+};
+
+class pla;
 
 template <typename numT>
 struct oneDArray{
@@ -43,13 +53,13 @@ struct oneDArray{
     ~oneDArray();
     void initArr();
 
-    numT* ind_ptr(index_t row, index_t col);
-    index_t ind(index_t row, index_t col) const;
-    index_t indOrdered(index_t row, index_t col) const;
+    NVCC_BOTH numT* ind_ptr(index_t row, index_t col);
+    NVCC_BOTH index_t ind(index_t row, index_t col) const;
+    NVCC_BOTH index_t indOrdered(index_t row, index_t col) const;
 
-    pair<index_t,index_t> indTwoD(index_t index) const;
-    numT get_val(index_t row, index_t col) const;
-    void set_val(index_t row, index_t col,numT val) const;
+    NVCC_BOTH index_pair indTwoD(index_t index) const;
+    NVCC_BOTH numT get_val(index_t row, index_t col) const;
+    NVCC_BOTH void set_val(index_t row, index_t col,numT val) const;
 
     void printRow(index_t row) const;
     void printArr() const;
@@ -60,9 +70,10 @@ struct oneDArray{
     index_t findBiggestWeight(int minimumGain) const;
 
     //GPU Functions
-    void makeClones();
-
 };
+//extern template struct oneDArray<uint8_t>;
+//extern template struct oneDArray<uint32_t>;
+
 
 class pla{
 public:
@@ -83,6 +94,8 @@ public:
     uint8_t *usedrows; //array of used rows, 1 for used, 0 for unused
     oneDArray<uint32_t> countArray; //Count array representation of the pla file product term weights
     //<set> rowPairHash = nullptr #hash table for the pla table to store the product terms
+    int pairCount = 0; //number of pairs in the pla table
+    index_pair *pairArray; //array of pairs of row and column indexes for the pla table
 
     int startCost = 0; //cost of the original pla table
     int iterationNumber = 1; //iteration number for the minimization process
@@ -113,7 +126,7 @@ public:
     //minimization functions
     void startMinimization();
     bool minimize();
-    index_t addLiteral(pair<index_t,index_t> bindex2d);
+    index_t addLiteral(index_pair bindex2d);
 
     int currentPlaCost();
     bool doesImprove(int oldCost, int expected);
@@ -121,9 +134,12 @@ public:
     int otableSum();
 
     //GPU functions
-    void makeClones();
+    void createPairArray();
+    void makeClonesGpu();
+    void launchPairArray();
 };
 
+__global__ void fill_CountArray_Kernel(pla* Gpup); //this is a kernel function<<<>>>
 
 
 #endif //PLACUDA_PLA_H

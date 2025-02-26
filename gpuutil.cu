@@ -12,20 +12,28 @@
 //                                          # with 1 device it will be <devlist>=0
 //                                          # with 4 devices it could be 0,3
 //                                          # which leaves out 1, and 2
-#include "gpuutil.h"
 #include <atomic>
+#include "gpuutil.h"
 
-void GpuErr(const char *fmt, ...) {
+void GpuErr(const char *fmt,...) {
 	int tid = omp_get_thread_num();
-    va_list args;
+	va_list args;
 	printf("tid@%d - ", tid);
-    va_start(args, fmt);
-    vprintf(fmt, args);
-    va_end(args);
-    printf("\n");
-    exit(1);
+	va_start(args, fmt);
+	vprintf(fmt, args);
+	va_end(args);
+	printf("\n");
+	exit(1);
 }
 
+NVCC_BOTH void OnGpuErr(const char *fmt) {
+	printf("%s\n", fmt);
+#ifdef __CUDA_ARCH__
+	asm("trap;");
+#else
+	exit(1);
+#endif
+}
 
 int GpuNumCpuThreads = 0;
 int *GpuThreadDevice = nullptr;
@@ -211,7 +219,7 @@ static GpuCloneRecord_t *getclonerecord(const void *cpup, bool clonethread) {
 	GpuCloneRecord_t *crp;
 	for(crp = clonehashtab[h]; crp; crp=crp->gnext) {
 		if(crp->cpup == cpup) {
-			if(crp->clonethread != clonethread)
+			if(!clonethread && crp->clonethread)
 				GpuErr("getclonerecord: dev/thread mismatch");
 			return crp;
 		}
@@ -227,7 +235,7 @@ static GpuCloneRecord_t *getclonerecord(const void *cpup, size_t size, bool clon
 		if(crp->cpup == cpup) {
 			if(crp->size != size) 
 				GpuErr("Clone size mismatch");
-			if(crp->clonethread != clonethread)
+			if(!clonethread && crp->clonethread)
 				GpuErr("getclonerecord: dev/thread mismatch");
 			return crp;
 		}
@@ -348,7 +356,7 @@ void GpuCloneForDevices(void *cpup, size_t size, bool update, GpuClonePatch_t *p
 	for(int dev = 0; dev < GpuNumDevices; dev++) {
 		GpuSetDevice(dev);
 		GpuMallocDevice(&dclones[dev], size);
-		if(update) {
+		if(update) { //if update is true and patches is false, it will still copy the unchanged data over
 			if(patches) {
 				memcpy(pbuf, cpup, size);
 				void *fp;
