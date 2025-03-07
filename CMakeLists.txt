@@ -9,7 +9,8 @@ endif()
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CXX_STANDARD 17)
 
-set(OPT "-O0")
+set(OPT "-O0 -g")
+set(CMAKE_BUILD_TYPE Debug)
 
 # NVCC and CXX flags
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} ${OPT} -Xcompiler /openmp:llvm -G -m64 -std=c++17 -gencode=arch=compute_86,code=sm_86")

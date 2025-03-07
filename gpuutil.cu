@@ -29,11 +29,21 @@ void GpuErr(const char *fmt,...) {
 NVCC_BOTH void OnGpuErr(const char *fmt) {
 	printf("%s\n", fmt);
 #ifdef __CUDA_ARCH__
+	printf("Error on GPU\n");
 	asm("trap;");
 #else
+	printf("Error on CPU\n");
 	exit(1);
 #endif
 }
+
+void GpuCheckKernelLaunch(const char *msg) {
+	cudaError_t err = cudaGetLastError(); //put after every kernel launch
+	if(cudaSuccess != err) {
+		GpuErr("Kernel %s(%d): %s\n",msg, static_cast<int>(err), cudaGetErrorString(err));
+	}
+}
+
 
 int GpuNumCpuThreads = 0;
 int *GpuThreadDevice = nullptr;

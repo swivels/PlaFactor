@@ -6,7 +6,7 @@
 #include "pla.h"
 using namespace std;
 
-//hello github
+const char* arrayEnumString[] = {"itable", "otable", "countArray","usedrows","pairArray"};
 
 #define ParsingFunctions //code section for parsing functions
 #ifdef ParsingFunctions
@@ -198,12 +198,12 @@ void pla::printEspressoFormat() {//unfinished
     cout << ".e" << endl;
 }
 
-void pla::printMaskArray() {
-    cout<<"Mask array:"<<endl;
+NVCC_BOTH void pla::printMaskArray() const {
+    printf("Mask array:\n");
     for(index_t row = 0; row < itable.alrows; row++) {
-        cout<< char('0' +usedrows[row])<<" ";
+        printf("%c ", '0' +usedrows[row]);
     }
-    cout<<endl;
+    printf("\n");
 }
 
 void pla::fillCountArray() {
@@ -441,7 +441,7 @@ void pla::removeUnusedRows() { //EXPAND REMOVE ROWS TO MERGE ROWS THAT HAVE ONLY
 #define MinimizingFunctions //code section for parsing functions
 #ifdef MinimizingFunctions
 
-void pla::startMinimization() {
+NVCC_BOTH void pla::startMinimization() {
     startCost = currentPlaCost();
     while(minimize())
         continue;
@@ -456,10 +456,9 @@ bool pla::minimize() {
     Saving copies of the pla table, output table, and count array to revert to if the substitution does not improve the pla efficiency
     is too expensive, so instead the cost is calculated before substitution occurs and if the cost is higher after the substitution, a different weight is selected
      */
-    cout<<"Minimizing pla table (iteration "<<iterationNumber<<"):"<<endl;
+    printf("Minimizing pla table (iteration %d):\n",iterationNumber);
     int beforeCost = currentPlaCost();
-    cout<<"Current PLA Cost "<<beforeCost<<endl;
-    vector<uint32_t> skipIndex;
+    printf("Current PLA Cost %d\n",beforeCost);
 
     index_t bindex = countArray.findBiggestWeight(-1);
     if (bindex == countArray.alsize) {
@@ -470,9 +469,9 @@ bool pla::minimize() {
     index_pair bindex2d = countArray.indTwoD(bindex);
     index_t ind1 = bindex2d.first;
     index_t ind2 = bindex2d.second;
-    cout<<"Biggest weight: "<<bweight<<endl;
-    cout<<"Biggest weight index 1d: "<<bindex<<endl;
-    cout<<"Biggest weight index 2d: (row  "<<ind1<<", col "<<ind2<<")"<<endl;
+    printf("Biggest weight: %u\n",bweight);
+    printf("Biggest weight index 1d: %u\n", bindex);
+    printf("Biggest weight index 2d: (row %u, col %u)\n", ind1, ind2);
 
     //bweight*(-1*(number of literals being substituted out/saved) + 1(number of literals being added))+(number of literals being substituted out/saved);
     //bweight*(-2 + 1)+2;
@@ -715,6 +714,19 @@ void pla::createPairArray() {
             pairArray[pos++] = index_pair(col1,col2);
         }
     }
+#if 0
+    for (int i = 0; i < pairCount; i++) {
+        cout<<"("<<pairArray[i].first<<", "<<pairArray[i].second<<"), ";
+        if (i%5 == 0)
+            cout<<endl;
+    }
+#endif
+}
+
+__global__ void patchPlaParentPointer(pla* plap) {
+    plap->itable.parent = plap;
+    plap->otable.parent = plap;
+    plap->countArray.parent = plap;
 }
 
 void pla::makeClonesGpu() {
@@ -726,27 +738,79 @@ void pla::makeClonesGpu() {
     ADDPATCH(this, usedrows);
     ADDPATCH(this, pairArray);
     ENDPATCH();
-    GpuCloneForDevices(itable.arr,itable.alsize*sizeof(uint8_t),false);
-    GpuCloneForDevices(otable.arr,otable.alsize*sizeof(uint8_t),false);
+    GpuCloneForDevices(itable.arr,itable.alsize*sizeof(uint8_t),true);
+    GpuCloneForDevices(otable.arr,otable.alsize*sizeof(uint8_t),true);
     GpuCloneForDevices(countArray.arr,countArray.alsize*sizeof(uint32_t),false);
-    GpuCloneForDevices(usedrows,itable.alsize*sizeof(uint8_t),false);
-    GpuCloneForDevices(pairArray,pairCount*sizeof(uint32_t),false);
+    GpuCloneForDevices(usedrows,itable.alsize*sizeof(uint8_t),true);
+    GpuCloneForDevices(pairArray,pairCount*sizeof(index_pair),true);
 
     GpuCloneForDevices(this,sizeof(*this),true,_patches);
+
+    pla* plaGpup = (pla*)GpuFindCloneDevice((void*)this,GpuGetDevice());
+    patchPlaParentPointer<<<1,1>>>(plaGpup);
+
+    GpuCheckKernelLaunch("patchPlaParentPointer");
 }
 
-void pla::launchPairArray(){
+void pla::launchPairArray() {
     int threads = pairCount;
     int dev = GpuGetDevice();//get device for current thread on CPU--will be thread 0. gets dev which is gpu for thread 0
     pla *plaGpup = (pla*)GpuFindCloneDevice((void*)this,dev);
     int bcnt = GpuThreads2BlockCount(threads);
     fill_CountArray_Kernel<<<bcnt,GpuBlockSize>>>(plaGpup); //GpuBlockSize is global and set by GPU init
 
-    cudaError_t err = cudaGetLastError();
-    if(cudaSuccess != err) {
-        GpuErr("kernel execution failed(%d): %s\n", static_cast<int>(err), cudaGetErrorString(err));
+    GpuCheckKernelLaunch("fill_CountArray_Kernel");
+}
+
+void pla::retrieveDataGpu(){
+    int dev = GpuGetDevice();
+    void *LocationGpu = GpuFindCloneDevice((void*)this,dev);
+    char* buf = new char[sizeof(pla)];
+    GpuMemcpyDeviceToHost(buf,LocationGpu, sizeof(pla));
+    pla* plaGpu = (pla*)buf;
+
+    countArray.retrieveDataGpu(&plaGpu->countArray);
+    itable.retrieveDataGpu(&plaGpu->itable);
+    otable.retrieveDataGpu(&plaGpu->otable);
+
+    //countArray.printArr();
+    delete[] buf;
+}
+
+void pla::printDataOnGpu(arrayEnum type) {
+    printf("Printing %s on GPU\n",arrayEnumString[type]);
+    void *LocationGpu = GpuFindCloneDevice((void*)this,GpuGetDevice());
+    print_Array_Kernel<<<1,1>>>((pla*)LocationGpu,type);
+    GpuCheckKernelLaunch("print_Array_Kernel");
+}
+
+__global__ void print_Array_Kernel(pla* plaGpup,arrayEnum type) {
+    switch (type) {
+        case e_itable:
+            plaGpup->itable.printArr();
+        break;
+        case e_otable:
+            plaGpup->otable.printArr();
+        break;
+        case e_countArray:
+            plaGpup->countArray.printArr();
+        break;
+        case e_usedrows:
+            plaGpup->printMaskArray();
+        break;/*
+        case e_pairArray:
+            for (int i = 0; i < plaGpup->pairCount; i++) {
+                printf("(%u, %u), ", plaGpup->pairArray[i].first, plaGpup->pairArray[i].second);
+                if (i % 5 == 0)
+                    printf("\n");
+            }
+        break;*/
+        default:
+            printf("Unknown array type in print_Array_Kernel\n");
+        break;
     }
 }
+
 __global__ void fill_CountArray_Kernel(pla* plaGpup){ //__global__ means it lives on the gpu and can be called from the cpu
     int idx = threadIdx.x+blockDim.x*blockIdx.x; //way to find global thread index within a device
 	// idx is the "sequence" number
@@ -754,6 +818,7 @@ __global__ void fill_CountArray_Kernel(pla* plaGpup){ //__global__ means it live
         return;
     index_t col1 = plaGpup->pairArray[idx].first;
     index_t col2 = plaGpup->pairArray[idx].second;
+    //printf("Thread %d: col1: %u, col2: %u\n",idx,col1,col2);
 
 	index_t resultIndex = plaGpup->countArray.ind(col1,col2);
     int cnt = 0;

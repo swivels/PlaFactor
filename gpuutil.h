@@ -19,7 +19,6 @@
 #define NVCC
 #endif
 
-#include <cmath>
 #include <cstddef> // for offsetof
 #include <cstdlib>
 #include <cstdio>
@@ -39,6 +38,8 @@
 // Fatal error message printer - will exit.
 void GpuErr(const char *fmt, ...);
 NVCC_BOTH void OnGpuErr(const char *fmt);
+
+void GpuCheckKernelLaunch(const char *msg);
 
 // GpuInit will set these up
 extern int GpuNumCpuThreads; // number of OMP threads

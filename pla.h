@@ -1,6 +1,7 @@
 //
 // Created by Brian McElvain on 10/23/24.
 //
+#include "gpuutil.h"
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -8,7 +9,6 @@
 #include <cmath>
 #include <vector>
 #include <algorithm> //for std::fill and all_of
-#include "gpuutil.h"
 #include "miscfunctions.h"
 
 using namespace std;
@@ -20,6 +20,14 @@ using namespace std;
 #define PLACUDA_PLA_H
 
 typedef uint32_t index_t;
+
+enum arrayEnum{
+    e_itable = 0, //0
+    e_otable, //1
+    e_countArray, //2
+    e_usedrows, //3
+    e_pairArray //4
+};
 
 struct index_pair{
     uint32_t first;
@@ -61,15 +69,16 @@ struct oneDArray{
     NVCC_BOTH numT get_val(index_t row, index_t col) const;
     NVCC_BOTH void set_val(index_t row, index_t col,numT val) const;
 
-    void printRow(index_t row) const;
-    void printArr() const;
+    NVCC_BOTH void printRow(index_t row) const;
+    NVCC_BOTH void printArr() const;
 
     vector<string> convertBackFormat(); //prints the pla table converted back to be in espresso format
     vector<string> convertToVecString(); //converts the pla table to a vector of strings
 
-    index_t findBiggestWeight(int minimumGain) const;
+    NVCC_BOTH index_t findBiggestWeight(int minimumGain) const;
 
     //GPU Functions
+    void retrieveDataGpu(oneDArray<numT> *Gpup);
 };
 //extern template struct oneDArray<uint8_t>;
 //extern template struct oneDArray<uint32_t>;
@@ -94,6 +103,7 @@ public:
     uint8_t *usedrows; //array of used rows, 1 for used, 0 for unused
     oneDArray<uint32_t> countArray; //Count array representation of the pla file product term weights
     //<set> rowPairHash = nullptr #hash table for the pla table to store the product terms
+
     int pairCount = 0; //number of pairs in the pla table
     index_pair *pairArray; //array of pairs of row and column indexes for the pla table
 
@@ -105,7 +115,7 @@ public:
     void parsePla(string filename);
     void printPla();
     void printEspressoFormat(); //prints the pla table converted back to be in espresso format
-    void printMaskArray();
+    NVCC_BOTH void printMaskArray() const; //prints usedrows array
     //array manipulation functions
     template <typename numT>
     void addColXtable(oneDArray<numT> & table);
@@ -124,7 +134,7 @@ public:
     void removeUnusedRows();
     void fillCountArray();
     //minimization functions
-    void startMinimization();
+    NVCC_BOTH void startMinimization();
     bool minimize();
     index_t addLiteral(index_pair bindex2d);
 
@@ -137,9 +147,11 @@ public:
     void createPairArray();
     void makeClonesGpu();
     void launchPairArray();
+    void retrieveDataGpu();
+    void printDataOnGpu(arrayEnum type);
 };
 
+__global__ void print_Array_Kernel(pla* plaGpup,arrayEnum type);
 __global__ void fill_CountArray_Kernel(pla* Gpup); //this is a kernel function<<<>>>
-
 
 #endif //PLACUDA_PLA_H
