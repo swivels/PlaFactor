@@ -245,7 +245,7 @@ void pla::fillCountArray() {
 #define ArrayManipulationFunctions //code section for functions that manipulate itable, otable, and countArray arrays
 #ifdef ArrayManipulationFunctions
 template <>
-void pla::addColXtable<uint8_t>(oneDArray<uint8_t>& table) { // adds an empty column except for one index in it that stores data, which could be a 0 or 1
+void NVCC_BOTH pla::addColXtable<uint8_t>(oneDArray<uint8_t>& table) { // adds an empty column except for one index in it that stores data, which could be a 0 or 1
     if (table.cols == table.alcols) {
         resizeXtable(table,1); //2 options, one for itable and otable
     }
@@ -258,7 +258,7 @@ void pla::addColXtable<uint8_t>(oneDArray<uint8_t>& table) { // adds an empty co
 }
 
 template <>
-void pla::addColXtable<uint32_t>(oneDArray<uint32_t>& table) { // adds an empty column except for one index in it that stores data, which could be a 0 or 1
+void NVCC_BOTH pla::addColXtable<uint32_t>(oneDArray<uint32_t>& table) { // adds an empty column except for one index in it that stores data, which could be a 0 or 1
     if (table.cols == table.alcols) {
         resizeCountArray(1);
     }
@@ -270,9 +270,9 @@ void pla::addColXtable<uint32_t>(oneDArray<uint32_t>& table) { // adds an empty 
     table.size += table.rows; //size = rows * cols;
 }
 
-void pla::addColItable(){addColXtable(itable);}
-void pla::addColOtable(){addColXtable(otable);}
-void pla::addColCountArray(){addColXtable(countArray);}
+void NVCC_BOTH pla::addColItable(){addColXtable(itable);}
+void NVCC_BOTH pla::addColOtable(){addColXtable(otable);}
+void NVCC_BOTH pla::addColCountArray(){addColXtable(countArray);}
 
 int pla::findFreeRowItable() const { // returns start row in 1d array for place to put new row in, works for Otable too
     if (itable.rows == itable.alrows)
@@ -441,7 +441,7 @@ void pla::removeUnusedRows() { //EXPAND REMOVE ROWS TO MERGE ROWS THAT HAVE ONLY
 #define MinimizingFunctions //code section for parsing functions
 #ifdef MinimizingFunctions
 
-NVCC_BOTH void pla::startMinimization() {
+void pla::startMinimization() {
     startCost = currentPlaCost();
     while(minimize())
         continue;
@@ -495,30 +495,9 @@ bool pla::minimize() {
                 onlyPair = true;
             }
             if(onlyPair) { //todo: collapse this section using the addLit function by sending a row number if this is true and -1 if false
-                sumCost--;
-                cout<<"Found identical row to the product term being substituted, using this row, "<<row<<", instead of adding a new one"<<endl;
-                cout<<"New cost of substitution: "<<sumCost<<endl;
-                /*
-                bool onlyInp = true;
-                for (index_t col = 0; col < otable.cols-1; col++) {
-                    if (otable.get_val(row, col) == 1) {
-                        for (index_t orow = 0; orow < otable.alrows; orow++) {
-                            if (!usedrows[orow] || orow == row)
-                                continue;
-                            if(otable.get_val(orow, col) == 1) {
-                                onlyInp = false;
-                                break;
-                            }
-                        }
-                        break;
-                    }
-                }
-                if(onlyInp) {
-                    sumCost--;
-                    cout<<"Found additional output output term used by chosen only pair, thus i need to create a new output, instead of reusing the output from my found only pair"<<endl;
-                    cout<<"New cost of substitution: "<<sumCost<<endl;
-                }
-                */
+                sumCost--; //todo now: move this code outside of the if statement, revisit code structure.
+                printf("Found identical row to the product term being substituted, using this row, %u, instead of adding a new one\n", row);
+                printf("New cost of substitution: %d\n", sumCost);
 
                 addColItable();
                 addColItable(); //1 col for ~a, 1 col for a
@@ -551,15 +530,15 @@ bool pla::minimize() {
     //now to substitute the new product term into the pla table in place of product terms that contain it
     int testCount = 0;
     cout<<"Updating columns "<<ind1<<" and "<<ind2<<" in row: ";
-    for (index_t row = 0; row < itable.alrows; row++) {
+#pragma omp parallel for
+    for (index_t row = 0; row < itable.alrows; row++) { //launch kernel here
         if (!usedrows[row] || row == skipRow)
             continue;
         if (itable.get_val(row, ind1) == 1 && itable.get_val(row, ind2) == 1) {
             for (index_t col = 0; col < itable.cols-2; col++) {
                 if (col == ind1 || col == ind2) //if neither of the substituted literals in the product term match this column
                     continue;
-                if (itable.get_val(row, col) == 1) { //update count array
-
+                if (itable.get_val(row, col) == 1) { //update count array, //use atomic decrement and increment
                     countArray.arr[countArray.indOrdered(col, ind1)]--; //by subtracting one from the previous combo between this column and one biggest index
                     countArray.arr[countArray.indOrdered(col, ind2)]--;
                     countArray.arr[countArray.ind(col, itable.cols-1)]++; //then add the combo between this column and the newly added literal
@@ -702,12 +681,10 @@ int pla::otableSum() {
 #define GPUFunctions //code section for functions for GPU
 #ifdef GPUFunctions
 
-#define SAMPLESPERTHREAD 1024
-
 void pla::createPairArray() {
     pairCount = itable.cols*(itable.cols-1)/2;
     pairArray = new index_pair[pairCount];
-    assert(pairCount == ((countArray.size-countArray.rows)/2)); //not quite right
+    assert(pairCount == ((countArray.size-countArray.rows)/2));
     index_t pos = 0;
     for(index_t col1 = 0; col1 < itable.cols; col1++) {
         for(index_t col2 = col1+1; col2 < itable.cols; col2++) {
@@ -820,14 +797,14 @@ __global__ void fill_CountArray_Kernel(pla* plaGpup){ //__global__ means it live
     index_t col2 = plaGpup->pairArray[idx].second;
     //printf("Thread %d: col1: %u, col2: %u\n",idx,col1,col2);
 
-	index_t resultIndex = plaGpup->countArray.ind(col1,col2);
+	index_t resultIndex = plaGpup->countArray.ind(col1,col2); //result index is unique to the thread
     int cnt = 0;
     for(index_t row = 0; row < plaGpup->itable.alrows; row++) {
         if(plaGpup->usedrows[row] == 0)
             continue;
         if(plaGpup->itable.get_val(row,col1) == 0 || plaGpup->itable.get_val(row,col2) == 0)
             continue;
-        cnt++;
+        cnt++; //counts with a thread local variable if pair of literals exist in any rows
     }
     plaGpup->countArray.arr[resultIndex] = cnt;
 }

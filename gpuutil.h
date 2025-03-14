@@ -1,6 +1,6 @@
 //
 // Basic GPU setup and API's
-
+// BSD3 Licence, part of a physics software library at Berkely
 //
 // This code should be compiled with -fopenmp under gcc and
 // equivalent for other compilers.

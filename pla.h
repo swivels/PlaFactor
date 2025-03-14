@@ -118,9 +118,9 @@ public:
     NVCC_BOTH void printMaskArray() const; //prints usedrows array
     //array manipulation functions
     template <typename numT>
-    void addColXtable(oneDArray<numT> & table);
-    void addColItable();
-    void addColOtable();
+    NVCC_BOTH void addColXtable(oneDArray<numT> & table);
+    NVCC_BOTH void addColItable();
+    NVCC_BOTH void addColOtable();
     void addColCountArray();
     int findFreeRowItable() const;
     index_t addRowsInOutTables(uint8_t* iline, uint8_t* oline); //adds 1 row to input and 1 row to output table, at the same row index
@@ -134,7 +134,7 @@ public:
     void removeUnusedRows();
     void fillCountArray();
     //minimization functions
-    NVCC_BOTH void startMinimization();
+    void startMinimization();
     bool minimize();
     index_t addLiteral(index_pair bindex2d);
 
