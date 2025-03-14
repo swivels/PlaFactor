@@ -1,7 +1,3 @@
-//
-// Created by brian on 11/5/2024.
-//
-
 #include "miscfunctions.h"
 
 int nextPowTwo(int n) { //returns 2^x of which x is found by ceil(2^x = n)

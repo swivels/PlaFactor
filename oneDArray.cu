@@ -1,10 +1,5 @@
-//
-// Created by brian on 11/5/2024.
-//
 #include <cassert>
-
 #include "pla.h"
-//~(numT)0 is max int
 
 template<typename numT>
 oneDArray<numT>::oneDArray(const oneDArray<numT> &other) {

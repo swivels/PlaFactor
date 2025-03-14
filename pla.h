@@ -1,6 +1,3 @@
-//
-// Created by Brian McElvain on 10/23/24.
-//
 #include "gpuutil.h"
 #include <iostream>
 #include <fstream>

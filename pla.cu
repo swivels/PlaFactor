@@ -1,7 +1,3 @@
-//
-// Created by Brian McElvain on 10/23/24.
-//
-
 #include <cassert>
 #include "pla.h"
 using namespace std;
