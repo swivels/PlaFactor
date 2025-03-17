@@ -6,6 +6,7 @@ Parallelizing this computation is beneficial as it significantly reduces the run
 It is designed to handle large datasets efficiently.
 
 Notable functions include makeClonesGpu(), fill_CountArray_Kernel(pla* plaGpup), and minimize() found in pla.cu.
+
 I am not finished parallelzing everything yet.
 
 ## References  
