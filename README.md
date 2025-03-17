@@ -5,6 +5,7 @@ This project aims to accelerate the computation of weights of candidate factors 
 Parallelizing this computation is beneficial as it significantly reduces the runtime, especially in scenarios where timing goals are not as stringent, such as ASIC prototyping.
 It is designed to handle large datasets efficiently.
 
+Notable functions include makeClonesGpu(), fill_CountArray_Kernel(pla* plaGpup), and minimize() found in pla.cu.
 I am not finished parallelzing everything yet.
 
 ## References  
