@@ -6,7 +6,6 @@
 using namespace std;
 
 int main(int argc, char **argv) {
-    //set OMP_NUM_THREADS=16 bc 16 cores
     //https://github.com/p-ranav/argparse?tab=readme-ov-file#quick-start
     argparse::ArgumentParser program("PlaCuda");
     program.add_argument("--gpu")
