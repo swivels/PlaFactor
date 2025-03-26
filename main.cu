@@ -1,7 +1,8 @@
 #include <iostream>
 #include "argparse.hpp"
 #include "pla.h"
-
+//PLA is a two level logic circuit and my program turns it into an efficient,
+//minimized multilevel logic circuit
 using namespace std;
 
 int main(int argc, char **argv) {
