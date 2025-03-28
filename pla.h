@@ -35,6 +35,12 @@ struct index_pair{
     NVCC_BOTH index_pair(index_t f, index_t s) : first(f), second(s) {}
 };
 
+struct pair_weight {
+    uint32_t pairIndex;
+    uint32_t weight;
+    pair_weight(): pairIndex(0), weight(0) {}
+};
+
 class pla;
 
 template <typename numT>
@@ -103,6 +109,7 @@ public:
 
     int pairCount = 0; //number of pairs in the pla table
     index_pair *pairArray; //array of pairs of row and column indexes for the pla table
+    pair_weight *weightArray_d;
 
     int startCost = 0; //cost of the original pla table
     int iterationNumber = 1; //iteration number for the minimization process
@@ -133,6 +140,8 @@ public:
     //minimization functions
     void startMinimization();
     bool minimize();
+    void startMinimizationGpu();
+    bool minimizeGpu();
     index_t addLiteral(index_pair bindex2d);
 
     int currentPlaCost();
@@ -150,5 +159,6 @@ public:
 
 __global__ void print_Array_Kernel(pla* plaGpup,arrayEnum type);
 __global__ void fill_CountArray_Kernel(pla* Gpup); //this is a kernel function<<<>>>
+__global__ void findBigWCountArray_Kernel(pla* plaGpup);
 
 #endif //PLACUDA_PLA_H

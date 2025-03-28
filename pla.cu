@@ -40,7 +40,12 @@ void parseLineToIntegerRow(string line, oneDArray<uint8_t> &table, bool isOutput
     delete []arrRow;
 }
 
-pla::pla() : itable(this), otable(this), countArray(this) {
+pla::pla() : itable(this), otable(this), countArray(this), usedrows(nullptr), pairArray(nullptr),weightArray_d(nullptr) {
+    doti = 0;
+    doto = 0;
+    dotp = 0;
+    dotType = "";
+    iterationNumber = 0;
 }
 
 void pla::parsePla(string filename) {
@@ -213,26 +218,19 @@ void pla::fillCountArray() {
     print("This means the product term reprentated by the row and column has 1 positive and 1 negative literal and occurs(weight) 1 time\n")
     print("Filling the count array:")
      */
-
-    //cout<<"index result: ";
-#pragma omp parallel for
-    for(index_t col1 = 0; col1 < itable.cols; col1++) {
-        for(index_t col2 = col1+1; col2 < itable.cols; col2++) {
-            index_t resultIndex = countArray.ind(col1,col2);
-            //cout<<resultIndex<<" with value: "; //todo: has some index's that are too large/out of bounds, fix
-            int cnt = 0;
-            for(index_t row = 0; row < itable.alrows; row++) {
-                if(usedrows[row] == 0)
-                    continue;
-                if(itable.get_val(row,col1) == 0 || itable.get_val(row,col2) == 0)
-                    continue;
-                cnt++;
-            }
-            countArray.arr[resultIndex] = cnt;
-            //cout<<countArray.arr[resultIndex]<<", "<<endl;
+#pragma omp parallel for schedule(static,1)
+    for (int i = 0; i < pairCount;i++) {
+        index_pair pair = pairArray[i];
+        int cnt = 0;
+        for(index_t row = 0; row < itable.alrows; row++) {
+            if(usedrows[row] == 0)
+                continue;
+            if(itable.get_val(row,pair.first) == 0 || itable.get_val(row,pair.second) == 0)
+                continue;
+            cnt++;
         }
+        countArray.arr[countArray.ind(pair.first,pair.second)] = cnt;
     }
-    //cout<<endl;
 
 }
 
@@ -446,7 +444,7 @@ void pla::startMinimization() {
 
 bool pla::minimize() {
     /*
-    minimize the pla file by finding the highest weight product term as already calculated in the countarray and removing it by factoring/substitution
+    minimize the pla file by finding the highest weight product term in the countarray and removing it by factoring/substitution
     and incrementally updating the count array and pla table
 
     Saving copies of the pla table, output table, and count array to revert to if the substitution does not improve the pla efficiency
@@ -474,6 +472,165 @@ bool pla::minimize() {
     int sumCost = (int)bweight*-1 + 2; //cost of substitution
     cout<<"Cost of substitution: "<<sumCost<<endl;
     //cout<<"Cost of substitution is less than 0, proceeding with substitution"<<endl;
+    index_t skipRow;
+    bool onlyPair = false;
+    for (index_t row = 0; row < itable.alrows; row++) {
+        if (!usedrows[row])
+            continue;
+        //onlyPair = false; maybe can remove
+        if (itable.get_val(row, ind1) == 1 && itable.get_val(row, ind2) == 1) {
+            for (index_t col = 0; col < itable.cols; col++) {
+                if (col == ind1 || col == ind2) //if neither of the substituted literals in the product term match this column
+                    continue;
+                if (itable.get_val(row, col) == 1) { //avoids using this row if it contains another literal other than the biggest weight substituted literals
+                    onlyPair = false;
+                    break;
+                }
+                onlyPair = true;
+            }
+            if(onlyPair) { //todo: collapse this section using the addLit function by sending a row number if this is true and -1 if false
+                sumCost--; //todo now: move this code outside of the if statement, revisit code structure.
+                printf("Found identical row to the product term being substituted, using this row, %u, instead of adding a new one\n", row);
+                printf("New cost of substitution: %d\n", sumCost);
+
+                addColItable();
+                addColItable(); //1 col for ~a, 1 col for a
+                newIlb.push_back(("~z_"+to_string(iterationNumber)));
+                newIlb.push_back(("z_"+to_string(iterationNumber))); // uses same name as output being added because the output is being fed into and used as a literal in the input table
+
+                addColOtable(); // new output column for the substituted product term to output to
+                otable.set_val(row,otable.cols-1,1); //using the found product terms prexisting output row, and sets a new output to 1 while maintaining prexisting output contributions
+                newOb.push_back(("z_"+to_string(iterationNumber)));
+
+                addColCountArray();
+                addColCountArray();
+                uint32_t* newCountRow = new uint32_t[countArray.cols];
+                memset(newCountRow, 0, countArray.cols * sizeof(uint32_t));
+                addRowCountArray(newCountRow);
+                addRowCountArray(newCountRow);
+                delete[] newCountRow;
+
+                skipRow = row;
+                break;
+            }
+
+        }
+    }
+    if(!onlyPair)
+        skipRow = addLiteral(bindex2d);
+    //end new cost calc code
+    //index_t skipRow = addLiteral(bindex2d);
+    //cout<<"\nUpdating the pla table and count array now:"<<endl;
+    //now to substitute the new product term into the pla table in place of product terms that contain it
+    int testCount = 0;
+    cout<<"Updating columns "<<ind1<<" and "<<ind2<<" in row: ";
+#pragma omp parallel for schedule(dynamic,1)
+    for (index_t row = 0; row < itable.alrows; row++) { //launch kernel here
+        if (!usedrows[row] || row == skipRow)
+            continue;
+        if (itable.get_val(row, ind1) == 1 && itable.get_val(row, ind2) == 1) {
+            for (index_t col = 0; col < itable.cols-2; col++) {
+                if (col == ind1 || col == ind2) //if neither of the substituted literals in the product term match this column
+                    continue;
+                if (itable.get_val(row, col) == 1) { //update count array, //use atomic decrement and increment
+#pragma omp critical(updateCountArrayMinimize)
+                    {
+                        countArray.arr[countArray.indOrdered(col, ind1)]--; //by subtracting one from the previous combo between this column and one biggest index
+                        countArray.arr[countArray.indOrdered(col, ind2)]--;
+                        countArray.arr[countArray.ind(col, itable.cols-1)]++; //then add the combo between this column and the newly added literal
+                    }
+                }
+            }
+#pragma omp critical(printRowNum)
+            {
+                cout<<row+1<<", ";
+                testCount++;
+                countArray.arr[countArray.ind(ind1,ind2)]--; //subtract 1 from the highest weight product term location in count array for every substitution
+            }
+            //we dont need to use pragma critical because no two rows will update the same location
+            itable.set_val(row,ind1,0); //todo: can maybe test if its working better if i do -- instead of setting to 0
+            itable.set_val(row,ind2,0);
+            itable.set_val(row,itable.cols-1,1); //might be itable.cols-1
+        }
+    }
+    int testweight = countArray.arr[countArray.ind(ind1,ind2)];
+    if(testweight != 0)
+        cout<<"Error: count array was not updated correctly because bweight is "<<testweight<<", which is greater than 0. It should have been reduced to 0 here."<<endl;
+    else
+        countArray.arr[countArray.ind(ind1,ind2)]++; //add 1 back to the now substituted out highest weight product term location
+    //in count array to account for the single added row which contained the substituted out product term
+    cout<<endl<<testCount<<" rows updated."<<endl;
+    removeUnusedRows(); //EXPAND REMOVE ROWS TO MERGE ROWS THAT HAVE ONLY 1 ONE IN THEM, MERGING THEIR OUTPUTS
+
+    cout<<endl<<endl<<"Minimized table results:"<<endl;
+    printPla();
+    if(doesImprove(beforeCost,sumCost)) {
+        cout<<"Substitution improved the pla efficiency"<<endl;
+        cout<<"Iteration number "<<iterationNumber++<<" successful."<<endl;
+        cout<<"-----------------------------"<<endl<<endl;
+        return true;
+    }else {
+        cout<<"Error: Substitution did not improve the pla efficiency"<<endl;
+        cout<<"Iteration number "<<iterationNumber<<" failed."<<endl;
+        cout<<"Started with a cost of "<<startCost<<" and "<<doti<<" literals. Ended with a cost of "<<currentPlaCost()<<" and "<<itable.cols/2<<" literals."<<endl;
+        cout<<"-----------------------------"<<endl<<endl;
+        return false;
+    }
+}
+void pla::startMinimizationGpu() {
+    startCost = currentPlaCost();
+    while(minimizeGpu())
+        continue;
+    return;
+}
+
+bool pla::minimizeGpu() {
+        /*
+    minimize the pla file by finding the highest weight product term in the countarray and removing it by factoring/substitution
+    and incrementally updating the count array and pla table
+
+    Saving copies of the pla table, output table, and count array to revert to if the substitution does not improve the pla efficiency
+    is too expensive, so instead the cost is calculated before substitution occurs and if the cost is higher after the substitution, a different weight is selected
+     */
+    printf("Minimizing pla table (iteration %d):\n",iterationNumber);
+    int beforeCost = currentPlaCost();
+    printf("Current PLA Cost %d\n",beforeCost);
+
+    pla* plaGpup = (pla*)GpuFindCloneDevice((void*)this,GpuGetDevice());
+    int bcnt = GpuThreads2BlockCount(pairCount);
+    findBigWCountArray_Kernel<<<bcnt,GpuBlockSize>>>(plaGpup);
+    GpuCheckKernelLaunch("findBigWCountArray_Kernel");
+
+    pair_weight pairWeight;
+    GpuMemcpyDeviceToHost((void*) &pairWeight, (void*) weightArray_d,sizeof(pair_weight));
+
+    index_pair bindex2d = pairArray[pairWeight.pairIndex];
+    index_t ind1 = bindex2d.first;
+    index_t ind2 = bindex2d.second;
+    index_t bindex = countArray.indOrdered(bindex2d.first,bindex2d.second);
+    index_t bweight = pairWeight.weight;
+
+
+    if (bweight == 0) {
+        printf("Found a weight of 0 strangely, this means that the count array was not updated correctly, exiting.\n");
+        return false;
+    }
+    /*
+    if (bindex == 0) {
+        printf("Never found a cost efficient product term to substitute, aborting minimization.\n");
+        //return false;
+    }
+    */
+    printf("Biggest weight: %u\n",bweight);
+    printf("Biggest weight index 1d: %u\n", bindex);
+    printf("Biggest weight index 2d: (row %u, col %u)\n", ind1, ind2);
+
+    //bweight*(-1*(number of literals being substituted out/saved) + 1(number of literals being added))+(number of literals being substituted out/saved);
+    //bweight*(-2 + 1)+2;
+    int sumCost = (int)bweight*-1 + 2; //cost of substitution
+    printf("Cost of substitution: %d\n",sumCost);
+    //cout<<"Cost of substitution is less than 0, proceeding with substitution"<<endl;
+    //return false; //todo: remove
     index_t skipRow;
     bool onlyPair = false;
     for (index_t row = 0; row < itable.alrows; row++) {
@@ -717,6 +874,10 @@ void pla::makeClonesGpu() {
     GpuCloneForDevices(usedrows,itable.alsize*sizeof(uint8_t),true);
     GpuCloneForDevices(pairArray,pairCount*sizeof(index_pair),true);
 
+    //allocate array for findBigWCountArray_Kernel function
+    //it is a temporary array used in calculation of biggest weight
+    GpuMallocDevice((void**)&weightArray_d, pairCount*sizeof(pair_weight));
+
     GpuCloneForDevices(this,sizeof(*this),true,_patches);
 
     pla* plaGpup = (pla*)GpuFindCloneDevice((void*)this,GpuGetDevice());
@@ -805,6 +966,43 @@ __global__ void fill_CountArray_Kernel(pla* plaGpup){ //__global__ means it live
     plaGpup->countArray.arr[resultIndex] = cnt;
 }
 
+__global__ void findBigWCountArray_Kernel(pla* plaGpup) {
+    int idx = threadIdx.x+blockDim.x*blockIdx.x;
+    int count = plaGpup->pairCount;
+    pair_weight* tempArray = plaGpup->weightArray_d;
+    if (2*blockDim.x < count) {
+        if (!idx)
+            tempArray[0].pairIndex = -1; //need this to only occur once
+        OnGpuErr("Error, in findBigWCountArray_Kernel blockDim.x < count\n"
+                 "We do not current support array sizes larger than the block size\n");
+    }
+    if (idx >= count)
+        return;
+    tempArray[idx].pairIndex = idx; //stores the index of the pair in the pairArray,
+    //as the index of where this element is stored in tempArray will change as weights are compared
+    index_pair pair = plaGpup->pairArray[idx];
+    //stores the weight of the pair in the tempArray for comparisons, which is stored alongside the index of that pair in the pairArray
+    tempArray[idx].weight = plaGpup->countArray.arr[plaGpup->countArray.ind(pair.first,pair.second)];
+
+    __syncthreads();
+    int stride = (count+1)>>1; //+1 is for odd count
+    while (stride > 0) {
+        int tidStride = idx + stride;
+        if (tidStride < count) {
+            if (tempArray[idx].weight < tempArray[tidStride].weight) {
+                tempArray[idx] = tempArray[tidStride];
+            }
+        }
+        __syncthreads();
+        count = stride;
+        stride = (stride>1)?(count+1)>>1:0;
+    }
+    if (idx == 0) {
+        printf("Biggest weight: %u\n",tempArray[0].weight);
+        printf("Biggest weight index 1d: %u\n", tempArray[0].pairIndex);
+    }
+    return; //return tempArray[0].pairIndex;
+}
 
 /*
 *#define NVCC_BOTH __host__ __device__

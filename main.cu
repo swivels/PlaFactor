@@ -35,13 +35,15 @@ int main(int argc, char **argv) {
         myPlaGpu.makeClonesGpu();
         myPlaGpu.launchPairArray(); //fills in countArray on GPU
         //myPlaGpu.retrieveDataGpu();
-        myPlaGpu.printDataOnGpu(e_countArray);
+        myPlaGpu.startMinimizationGpu();
+        //myPlaGpu.printDataOnGpu(e_countArray);
     }
     else {
         std::cout << "Gpu disabled" << std::endl;
         std::cout << "Running on CPU only" << std::endl;
         pla myPla;
         myPla.parsePla("./testcases/espresso_minimized.pla");
+        myPla.createPairArray();
         myPla.fillCountArray();
         cout<<"Parsed tables in my formatted datastructure:"<<endl;
         myPla.printPla();
